@@ -52,42 +52,61 @@ def evaluate_method(train_df, test_df, method):
     volumetric_nn uses) and score it against the held-out `test_df`.
 
     Returns:
-        mae, rmse: [float] mean/root-mean-squared absolute error, in real density units.
+        metrics: [dict] containing normalized MAE, log10 MAE, MAPE (%), and physical MAE/RMSE.
     """
     models, _, _, _, x_lim, y_lim = fit_volumetric_models(train_df.copy(), density_range=density_range, model=method)
 
-    # Normalize the test coordinates using the TRAINING data's own min/max (x_lim) - the
-    # same limits the training coordinates were normalized with. Using the test set's own
-    # min/max instead would leak information about the held-out points into evaluation.
+    # Normalize the test coordinates using the TRAINING data's own min/max (x_lim).
     coord_cols = ['Latitude', 'Longitude', 'Altitude']
     x_test = np.array([(test_df[c].values - lo) / (hi - lo) for c, (lo, hi) in zip(coord_cols, x_lim)]).T
 
-    pred_log_norm = ensemble_predict(models, x_test)
-    predicted = 10 ** (pred_log_norm.flatten() * (y_lim[1] - y_lim[0]) + y_lim[0])
-    actual = test_df['Value'].values
+    # Normalized log-density predictions (range 0 to 1) and actuals
+    pred_log_norm = ensemble_predict(models, x_test).flatten()
+    actual_log = np.log10(test_df['Value'].values)
+    actual_log_norm = (actual_log - y_lim[0]) / (y_lim[1] - y_lim[0])
 
-    mae = np.mean(np.abs(predicted - actual))
-    rmse = np.sqrt(np.mean((predicted - actual) ** 2))
-    return mae, rmse
+    # Convert back to physical density scale (e-/m^3)
+    predicted_log = pred_log_norm * (y_lim[1] - y_lim[0]) + y_lim[0]
+    predicted_phys = 10 ** predicted_log
+    actual_phys = test_df['Value'].values
+
+    # Compute metrics across normalized, log, percentage, and physical scales
+    norm_mae = np.mean(np.abs(pred_log_norm - actual_log_norm))
+    log_mae = np.mean(np.abs(predicted_log - actual_log))
+    mape_percent = np.mean(np.abs(predicted_phys - actual_phys) / actual_phys) * 100.0
+    phys_mae = np.mean(np.abs(predicted_phys - actual_phys))
+    phys_rmse = np.sqrt(np.mean((predicted_phys - actual_phys) ** 2))
+
+    return {
+        'norm_mae': norm_mae,
+        'log_mae': log_mae,
+        'mape_percent': mape_percent,
+        'phys_mae': phys_mae,
+        'phys_rmse': phys_rmse
+    }
 
 
 def main():
     data = read_datafile(data_file, start, end)
 
-    # Apply the same density-range filter to the whole dataset before splitting, so both
-    # the train and held-out test points are valid (physically plausible) measurements.
+    # Apply the same density-range filter to the whole dataset before splitting.
     data = data.dropna()
     data = data[(data['Value'] >= density_range[0]) & (data['Value'] <= density_range[1])]
 
     train_df, test_df = split_data(data, test_fraction, random_state)
-    print(f"Train points: {len(train_df)}  Test points: {len(test_df)}")
+    print(f"Dataset: {data_file[0]}")
+    print(f"Total points: {len(data)} | Train points (90%): {len(train_df)} | Held-out test points (10%): {len(test_df)}\n")
 
-    print(f"\n{'Method':<10}{'MAE':>15}{'RMSE':>15}")
+    header = f"{'Method':<10}{'Norm MAE (0-1)':>16}{'Log10 MAE (dex)':>18}{'MAPE Error (%)':>16}{'Phys MAE (e-/m3)':>20}"
+    print(header)
+    print("-" * len(header))
+
     results = {}
     for method in methods:
-        mae, rmse = evaluate_method(train_df, test_df, method)
-        results[method] = (mae, rmse)
-        print(f"{method:<10}{mae:>15.4e}{rmse:>15.4e}")
+        res = evaluate_method(train_df, test_df, method)
+        results[method] = res
+        print(f"{method:<10}{res['norm_mae']:>16.4f}{res['log_mae']:>18.4f}{res['mape_percent']:>15.2f}%{res['phys_mae']:>20.4e}")
+
     return results
 
 
