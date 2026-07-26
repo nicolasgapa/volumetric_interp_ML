@@ -8,7 +8,12 @@ from amisrsynthdata.ionosphere import Ionosphere
 import yaml
 
 
-def create_all_data(start, end, data_file, n, config_file):
+def create_all_data(start, end, data_file, n, config_file, method='ann'):
+    # method: 'ann' (default) evaluates the neural network. Any other value ('linear',
+    # 'nearest', 'rbf') evaluates the corresponding non-ML baseline interpolator instead,
+    # using this exact same function, so the ANN and the baselines are compared with
+    # identical evaluation code (see compare_interp_methods.py).
+
     # Open file and extract the following arrays: time, latitude, longitude, altitude, value, error.
     data = read_datafile(data_file, start, end)
 
@@ -17,8 +22,8 @@ def create_all_data(start, end, data_file, n, config_file):
         config = yaml.load(cf, Loader=yaml.FullLoader)
     iono = Ionosphere(config)
 
-    # Importing the Network.
-    network, _, y_lim, _, _, stations = volumetric_nn(data, resolution=(100, 100, 30), cbar_lim=(1e10, 3e11), real_dist=False, fig3D=True)
+    # Importing the Network (or fitting the baseline interpolator, if method != 'ann').
+    network, _, y_lim, _, _, stations = volumetric_nn(data, resolution=(100, 100, 30), cbar_lim=(1e10, 3e11), real_dist=False, fig3D=True, model=method)
 
     # Finding the min and max of the latitude, longitude, and altitude.
     min_lat = int(np.min(data['Latitude']))

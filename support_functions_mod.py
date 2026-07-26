@@ -8,7 +8,10 @@ Embry-Riddle Aeronautical University
 """
 
 # Imports.
-import cartopy.crs as ccrs
+try:
+    import cartopy.crs as ccrs
+except ImportError:
+    ccrs = None
 import datetime as dt
 from matplotlib.widgets import Slider
 import matplotlib.pyplot as plt
@@ -16,9 +19,18 @@ import numpy as np
 import pandas as pd
 import pymap3d as pm
 from scipy.spatial import ConvexHull
-import tables
-import tensorflow as tf
+try:
+    import tables
+except ImportError:
+    tables = None
+import h5py
+try:
+    import tensorflow as tf
+except ImportError:
+    tf = None
+from sklearn.neural_network import MLPRegressor
 import geopy.distance
+from baseline_interp import fit_interpolator
 
 
 
@@ -58,28 +70,45 @@ def read_datafile(filenames, start_time, end_time, chi2lim=(0.1, 10)):
     for filename in filenames:
         # Open the file, and extract the relevant data.
         data_curr = pd.DataFrame()
-        with tables.open_file(filename, 'r') as h5file:
-            # Obtain time.
-            utime = h5file.get_node('/Time/UnixTime')[:]
+        if tables is not None:
+            with tables.open_file(filename, 'r') as h5file:
+                # Obtain time.
+                utime = h5file.get_node('/Time/UnixTime')[:]
 
-            # Obtain altitude, longitude, latitude, chi2, and fit code for the given times.
-            altitude = h5file.get_node('/Geomag/Altitude')[:]
-            latitude = h5file.get_node('/Geomag/Latitude')[:]
-            longitude = h5file.get_node('/Geomag/Longitude')[:]
+                # Obtain altitude, longitude, latitude, chi2, and fit code for the given times.
+                altitude = h5file.get_node('/Geomag/Altitude')[:]
+                latitude = h5file.get_node('/Geomag/Latitude')[:]
+                longitude = h5file.get_node('/Geomag/Longitude')[:]
 
-            # Filter time to only include times within the given start and end times.
-            idx = np.argwhere((utime[:, 0] >= (start_time - dt.datetime.utcfromtimestamp(0)).total_seconds()) & (
-                    utime[:, 1] <= (end_time - dt.datetime.utcfromtimestamp(0)).total_seconds())).flatten()
-            if len(idx) == 0:
-                idx = [0]
-            utime = utime[idx, :]
-            utime = utime.mean(axis=1)
+                # Filter time to only include times within the given start and end times.
+                idx = np.argwhere((utime[:, 0] >= (start_time - dt.datetime.utcfromtimestamp(0)).total_seconds()) & (
+                        utime[:, 1] <= (end_time - dt.datetime.utcfromtimestamp(0)).total_seconds())).flatten()
+                if len(idx) == 0:
+                    idx = [0]
+                utime = utime[idx, :]
+                utime = utime.mean(axis=1)
 
-            # Obtain the density values, errors, chi2 values, and fitcode (only for the selected times).
-            value = h5file.get_node('/FittedParams/Ne')[idx, :, :]
-            error = h5file.get_node('/FittedParams/dNe')[idx, :, :]
-            chi2 = h5file.get_node('/FittedParams/FitInfo/chi2')[idx, :, :]
-            fc = h5file.get_node('/FittedParams/FitInfo/fitcode')[idx, :, :]
+                # Obtain the density values, errors, chi2 values, and fitcode (only for the selected times).
+                value = h5file.get_node('/FittedParams/Ne')[idx, :, :]
+                error = h5file.get_node('/FittedParams/dNe')[idx, :, :]
+                chi2 = h5file.get_node('/FittedParams/FitInfo/chi2')[idx, :, :]
+                fc = h5file.get_node('/FittedParams/FitInfo/fitcode')[idx, :, :]
+        else:
+            with h5py.File(filename, 'r') as h5file:
+                utime = h5file['/Time/UnixTime'][:]
+                altitude = h5file['/Geomag/Altitude'][:]
+                latitude = h5file['/Geomag/Latitude'][:]
+                longitude = h5file['/Geomag/Longitude'][:]
+                idx = np.argwhere((utime[:, 0] >= (start_time - dt.datetime.utcfromtimestamp(0)).total_seconds()) & (
+                        utime[:, 1] <= (end_time - dt.datetime.utcfromtimestamp(0)).total_seconds())).flatten()
+                if len(idx) == 0:
+                    idx = [0]
+                utime = utime[idx, :]
+                utime = utime.mean(axis=1)
+                value = h5file['/FittedParams/Ne'][idx, :, :]
+                error = h5file['/FittedParams/dNe'][idx, :, :]
+                chi2 = h5file['/FittedParams/FitInfo/chi2'][idx, :, :]
+                fc = h5file['/FittedParams/FitInfo/fitcode'][idx, :, :]
 
         # Flatten the arrays.
         altitude = altitude.flatten()
@@ -143,32 +172,38 @@ class StopAtLossValue(tf.keras.callbacks.Callback):
             self.model.stop_training = True
 
 
-def volumetric_nn(df, start, end, resolution=(10, 10, 10), cbar_lim=None, real_dist=False, density_range=(1e10, 1e12),
-                  fig3D=True, save_imgs=False):
+def fit_volumetric_models(df, real_dist=False, density_range=(1e10, 1e12), model='ann', n_trials=15):
     """
-    Parameters:
-        df: [dataframe]
-            Pandas daraframe with 4 columns (not including the index column). Such columns must be: 'Latitude',
-            'Longitude', 'Altitude' and 'Value'. The 'Value' column must contain the electron density measures.
-        resolution: [tuple or list]
-            Tuple or list containing three integers. The resolution is the size of the 3D grid (x, y, z), corresponding
-            to (longitude, latitude, altitude). The higher the resolution, the longer it takes for the code to run.
-        cbar_lim: [tuple]
-            Elctron density color bar limits (e.g. (1e10, 1e11)).
-        real_dist: [boolean]
-            Set to True if you want the output to show the distances in kilometers from the radar (rather than in
-            longitude and latitude degrees).
-        density_range: [tuple]
-            Tuple containing the lower and upper limits of allowed electron density values. Any radar measurement
-            outside this range is removed before training the neural network. Default: (10e10, 10e12).
-        fig3D [boolean]:
-            True for 3D plot, False for 2D plot only.
-        save_imgs:
-            True if you want to save the images in a png format to the local directory.
-    Returns:
-        2D or 3D plot.
-    """
+    Preprocess radar data the same way `volumetric_nn` does (drop nans, filter to
+    density_range, log10-transform, 0-1 normalize coordinates), then fit either an ensemble
+    of ANNs or a single non-ML baseline interpolator (see baseline_interp.py). Splitting this
+    out of `volumetric_nn` lets any prediction point - not just the fixed 3D grid
+    `volumetric_nn` plots - be scored against a fitted model with `ensemble_predict` (used
+    for the held-out train/test comparison in holdout_interp_compare.py).
 
+    Parameters:
+        df: [dataframe] same as `volumetric_nn`'s `df` (columns 'Latitude', 'Longitude',
+            'Altitude', 'Value', 'Error').
+        real_dist, density_range: same meaning as in `volumetric_nn`.
+        model: [str] 'ann' (default) fits an ensemble of n_trials ANNs. Any other value
+            ('linear', 'nearest', 'rbf') fits the corresponding baseline_interp.py method
+            once (these are deterministic).
+        n_trials: [int] number of ANNs to train and ensemble-average (ignored for baselines).
+
+    Returns:
+        models: [list] one or more fitted models, each exposing `.predict(x)` on normalized
+            (0-1) coordinates, returning normalized (0-1) log-density predictions.
+        df: [dataframe] the processed dataframe (post dropna/filter/log-transform), with a
+            'Log Value' column and without 'Error'.
+        x: [dataframe] normalized (0-1) Latitude/Longitude/Altitude for every row of df.
+        weights: [ndarray] per-point weight used for the weighted error metrics.
+        x_lim: [list] [[min, max], ...] per coordinate column (Latitude, Longitude,
+            Altitude), in real (unnormalized) units. Use these to normalize any new query
+            point the same way the training coordinates were normalized.
+        y_lim: [list] [min, max] of Log Value, in real (unnormalized) units. Use these to
+            convert a normalized prediction back to a real electron density value:
+            10 ** (prediction * (y_lim[1] - y_lim[0]) + y_lim[0]).
+    """
     #################
     # DATA PROCESSING
     #################
@@ -224,7 +259,7 @@ def volumetric_nn(df, start, end, resolution=(10, 10, 10), cbar_lim=None, real_d
         weight = y_actual[i] / y_error[i]**2
         weights.append(weight)
     weights = np.array(weights)
-    
+
     # Dropping the Error column.
     df = df.drop(['Error'], axis=1)
 
@@ -235,7 +270,6 @@ def volumetric_nn(df, start, end, resolution=(10, 10, 10), cbar_lim=None, real_d
     df_train = df.copy()
     for column in df_train:
         df_train[column] = (df_train[column] - np.min(df_train[column])) / (np.max(df_train[column]) - np.min(df_train[column]))
-
 
     ##########
     # TRAINING
@@ -254,6 +288,120 @@ def volumetric_nn(df, start, end, resolution=(10, 10, 10), cbar_lim=None, real_d
     x_lim = [[np.min(x_org[c]), np.max(x_org[c])] for c in x_org]
     y_lim = [np.min(y_org.iloc[:, 0]), np.max(y_org.iloc[:, 0])]
 
+    models = []
+    if model.lower() == 'ann':
+        # Training the nn n_trials times (can be changed) and keeping every trained network,
+        # so predictions elsewhere can be ensemble-averaged exactly like `volumetric_nn` does.
+        for i in range(n_trials):
+            ####################
+            ## NEURAL NETWORK ##
+            ####################
+            if tf is not None:
+                network = tf.keras.Sequential([tf.keras.layers.Dense(units=256, input_shape=[x.shape[1]], activation='tanh'),
+                                           tf.keras.layers.Dense(units=128, activation='tanh'),
+                                           tf.keras.layers.Dense(units=64, activation='tanh'),
+                                           tf.keras.layers.Dropout(0.2),
+                                           tf.keras.layers.Dense(units=32, activation='tanh'),
+                                           tf.keras.layers.Dense(units=16, activation='tanh'),
+                                           tf.keras.layers.Dense(units=8, activation='tanh'),
+                                           tf.keras.layers.Dense(units=4, activation='tanh'),
+                                           tf.keras.layers.Dense(units=1, activation='sigmoid')])
+
+                # Compile the network: Define the optimizer and the loss function. See the following link for reference:
+                # https://medium.com/data-science-group-iitr/loss-functions-and-optimization-algorithms-demystified-bb92daff331c
+                network.compile(optimizer=tf.keras.optimizers.RMSprop(), loss=tf.keras.losses.MeanSquaredError())
+
+                # Define a checkpoint. This allows the network to save the "best weights" to a keras file.
+                checkpoint = tf.keras.callbacks.ModelCheckpoint('weights.keras', verbose=1, monitor='loss', save_best_only=True, mode='auto')
+
+                # Early stopping to prevent overtraining; stopping training if the loss doesn't improve after 25 epochs.
+                early_stopping = tf.keras.callbacks.EarlyStopping(monitor='loss',mode='auto',verbose=0,patience=25)
+
+                # Train the network.
+                # Comment out this line if you already have a weights.h5 file and you want to skip the training process.
+                network.fit(x, y, epochs=300, sample_weight=weights, callbacks=[StopAtLossValue(), early_stopping, checkpoint])
+
+                # Load the best weights that have been saved in the h5 file.
+                network.load_weights('weights.keras')
+            else:
+                mlp = MLPRegressor(hidden_layer_sizes=(256, 128, 64, 32, 16, 8, 4), activation='tanh', max_iter=300, random_state=i)
+                mlp.fit(x.values, y.values)
+                network = mlp
+
+            models.append(network)
+    else:
+        ##########################
+        ## BASELINE INTERPOLATOR ##
+        ##########################
+        # Non-ML baseline ('linear', 'nearest', or 'rbf'). These are deterministic, so a single
+        # fit replaces the n_trials-trial averaging used for the (stochastic) ANN above.
+        models.append(fit_interpolator(x.values, y.values, model))
+
+    return models, df, x, weights, x_lim, y_lim
+
+
+def ensemble_predict(models, x):
+    """
+    Average `.predict(x)` across an ensemble of fitted models (see `fit_volumetric_models`).
+    For a single-model ensemble (e.g. a baseline interpolator), this is just that model's
+    prediction.
+    """
+    preds = [np.asarray(m.predict(x)) for m in models]
+    return np.mean(preds, axis=0)
+
+
+class EnsembleModel:
+    """
+    Wraps a list of fitted models (see `fit_volumetric_models`) so `.predict()` returns
+    their ensemble-averaged prediction - the same quantity `volumetric_nn` plots and scores
+    - rather than an arbitrary single member. Lets callers elsewhere (e.g.
+    `graph_support_functions.create_all_data`) do `network.predict(x)` and get the ensemble
+    average.
+    """
+
+    def __init__(self, models):
+        self.models = models
+
+    def predict(self, x):
+        return ensemble_predict(self.models, x)
+
+
+def volumetric_nn(df, start=None, end=None, resolution=(10, 10, 10), cbar_lim=None, real_dist=False,
+                  density_range=(1e10, 1e12), fig3D=True, save_imgs=False, model='ann'):
+    """
+    Parameters:
+        df: [dataframe]
+            Pandas daraframe with 4 columns (not including the index column). Such columns must be: 'Latitude',
+            'Longitude', 'Altitude' and 'Value'. The 'Value' column must contain the electron density measures.
+        resolution: [tuple or list]
+            Tuple or list containing three integers. The resolution is the size of the 3D grid (x, y, z), corresponding
+            to (longitude, latitude, altitude). The higher the resolution, the longer it takes for the code to run.
+        cbar_lim: [tuple]
+            Elctron density color bar limits (e.g. (1e10, 1e11)).
+        real_dist: [boolean]
+            Set to True if you want the output to show the distances in kilometers from the radar (rather than in
+            longitude and latitude degrees).
+        density_range: [tuple]
+            Tuple containing the lower and upper limits of allowed electron density values. Any radar measurement
+            outside this range is removed before training the neural network. Default: (10e10, 10e12).
+        fig3D [boolean]:
+            True for 3D plot, False for 2D plot only.
+        save_imgs:
+            True if you want to save the images in a png format to the local directory.
+        model: [str]
+            Interpolation method used to fill the 3D grid. 'ann' (default) trains the neural network as before.
+            Any other value ('linear', 'nearest', 'rbf') fits the corresponding non-ML baseline interpolator
+            from baseline_interp.py instead, so its error can be compared against the ANN's using this same
+            function (see graph_support_functions.create_all_data).
+    Returns:
+        2D or 3D plot.
+    """
+
+    # Preprocess the data and fit the model (an ensemble of ANNs, or a single non-ML
+    # baseline interpolator - see fit_volumetric_models for details).
+    models, df, x, weights, x_lim, y_lim = fit_volumetric_models(df, real_dist=real_dist,
+                                                                  density_range=density_range, model=model)
+
     # Compute the lat/lon aspect ratio (useful for plotting).
     aspect_ratio = abs(x_lim[1][0] - x_lim[1][1]) / abs(x_lim[0][0] - x_lim[0][1])
 
@@ -265,64 +413,17 @@ def volumetric_nn(df, start, end, resolution=(10, 10, 10), cbar_lim=None, real_d
     predict = np.array([[r / (rows - 1), c / (columns - 1), h / (heights - 1)] for r in range(rows) for c in range(columns) for
                 h in range(heights)])
 
-    # Lists to save the predicted densities of each trial of the nn.
-    y_preds = []
-    predictions = []
+    # y_predict is used for plotting. Contains the ensemble-averaged prediction for every grid point.
+    y_predict = ensemble_predict(models, predict)
 
+    # y_preds_avg is used for calculating performance metrics. Contains the ensemble-averaged
+    # prediction for every point in the training dataframe.
+    y_preds_avg = ensemble_predict(models, x.values)
 
-    # Training the nn 15 times (can be changed).
-    for i in range(15):
-        ####################
-        ## NEURAL NETWORK ##
-        ####################
-        network = tf.keras.Sequential([tf.keras.layers.Dense(units=256, input_shape=[x.shape[1]], activation='tanh'),
-                                   tf.keras.layers.Dense(units=128, activation='tanh'),
-                                   tf.keras.layers.Dense(units=64, activation='tanh'),
-                                   tf.keras.layers.Dropout(0.2),
-                                   tf.keras.layers.Dense(units=32, activation='tanh'),                                   
-                                   tf.keras.layers.Dense(units=16, activation='tanh'),
-                                   tf.keras.layers.Dense(units=8, activation='tanh'),
-                                   tf.keras.layers.Dense(units=4, activation='tanh'),
-                                   tf.keras.layers.Dense(units=1, activation='sigmoid')])
-        
-        
-        # Compile the network: Define the optimizer and the loss function. See the following link for reference:
-        # https://medium.com/data-science-group-iitr/loss-functions-and-optimization-algorithms-demystified-bb92daff331c
-        network.compile(optimizer=tf.keras.optimizers.RMSprop(), loss=tf.keras.losses.MeanSquaredError())
-
-        # Define a checkpoint. This allows the network to save the "best weights" to a keras file.
-        checkpoint = tf.keras.callbacks.ModelCheckpoint('weights.keras', verbose=1, monitor='loss', save_best_only=True, mode='auto')
-    
-        # Early stopping to prevent overtraining; stopping training if the loss doesn't improve after 25 epochs.
-        early_stopping = tf.keras.callbacks.EarlyStopping(monitor='loss',mode='auto',verbose=0,patience=25)
-        
-        # Train the network.
-        # Comment out this line if you already have a weights.h5 file and you want to skip the training process.
-        network.fit(x, y, epochs=300, sample_weight=weights, callbacks=[StopAtLossValue(), early_stopping, checkpoint])
-
-        # Load the best weights that have been saved in the h5 file.
-        network.load_weights('weights.keras')
-        
-        # Adding the predicted densities to the lists.
-        predictions.append(network.predict(predict))
-        y_preds.append(network.predict(x))
-
-
-    # Finding the sum of the predictions.
-    sum_plot = 0 
-    sum_score = 0
-
-    for i in range(len(predictions)):
-        sum_plot = np.add(sum_plot, predictions[i])
-        sum_score = np.add(sum_score, y_preds[i])
-    
-    # y_predict is used for plotting.
-    # Contains all of the predictions.
-    y_predict = sum_plot / len(predictions)
-
-    # y_preds_avg is used for calculating performance metrics.
-    # Contains predictions for data in the dataframe.
-    y_preds_avg = sum_score / len(y_preds)
+    # Wrap the ensemble so callers elsewhere (e.g. graph_support_functions.create_all_data)
+    # get this same averaged prediction via `network.predict(...)`, rather than an arbitrary
+    # single ensemble member.
+    network = EnsembleModel(models)
 
     # Calculating the performance metrics.
     df_score = df.copy()
@@ -530,7 +631,8 @@ def volumetric_nn(df, start, end, resolution=(10, 10, 10), cbar_lim=None, real_d
             plt.xlabel('Latitude (°)')
             plt.ylabel('Longitude (°)')
         axis.set_zlabel('Altitude (km)')
-        plt.suptitle(f'Date: {start:%Y-%m-%d}  Timeframe (UTC): {start:%H:%M:%S} - {end:%H:%M:%S}')
+        if start is not None and end is not None:
+            plt.suptitle(f'Date: {start:%Y-%m-%d}  Timeframe (UTC): {start:%H:%M:%S} - {end:%H:%M:%S}')
 
         # Metrics.
         print("Weighted Mean Average Error (WMAE):", weighted_mean_abs_error_sklearn)
