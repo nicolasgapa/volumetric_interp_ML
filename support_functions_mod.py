@@ -167,7 +167,7 @@ class StopAtLossValue(tf.keras.callbacks.Callback):
     def on_batch_end(self, batch, logs=None):
         if logs is None:
             logs = {}
-        set_point_loss = 0.0001
+        set_point_loss = 1e-6
         if logs.get('loss') <= set_point_loss:
             self.model.stop_training = True
 
@@ -297,34 +297,32 @@ def fit_volumetric_models(df, real_dist=False, density_range=(1e10, 1e12), model
             ## NEURAL NETWORK ##
             ####################
             if tf is not None:
-                network = tf.keras.Sequential([tf.keras.layers.Dense(units=256, input_shape=[x.shape[1]], activation='tanh'),
+                network = tf.keras.Sequential([tf.keras.layers.Dense(units=512, input_shape=[x.shape[1]], activation='tanh'),
+                                           tf.keras.layers.Dense(units=256, activation='tanh'),
                                            tf.keras.layers.Dense(units=128, activation='tanh'),
                                            tf.keras.layers.Dense(units=64, activation='tanh'),
-                                           tf.keras.layers.Dropout(0.2),
                                            tf.keras.layers.Dense(units=32, activation='tanh'),
                                            tf.keras.layers.Dense(units=16, activation='tanh'),
                                            tf.keras.layers.Dense(units=8, activation='tanh'),
                                            tf.keras.layers.Dense(units=4, activation='tanh'),
                                            tf.keras.layers.Dense(units=1, activation='sigmoid')])
 
-                # Compile the network: Define the optimizer and the loss function. See the following link for reference:
-                # https://medium.com/data-science-group-iitr/loss-functions-and-optimization-algorithms-demystified-bb92daff331c
-                network.compile(optimizer=tf.keras.optimizers.RMSprop(), loss=tf.keras.losses.MeanSquaredError())
+                # Compile the network: Adam optimizer with learning rate 1e-3 and MeanSquaredError loss.
+                network.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.001), loss=tf.keras.losses.MeanSquaredError())
 
                 # Define a checkpoint. This allows the network to save the "best weights" to a keras file.
                 checkpoint = tf.keras.callbacks.ModelCheckpoint('weights.keras', verbose=1, monitor='loss', save_best_only=True, mode='auto')
 
-                # Early stopping to prevent overtraining; stopping training if the loss doesn't improve after 25 epochs.
-                early_stopping = tf.keras.callbacks.EarlyStopping(monitor='loss',mode='auto',verbose=0,patience=25)
+                # Early stopping: patience increased to 50 epochs.
+                early_stopping = tf.keras.callbacks.EarlyStopping(monitor='loss', mode='auto', verbose=0, patience=50)
 
-                # Train the network.
-                # Comment out this line if you already have a weights.h5 file and you want to skip the training process.
-                network.fit(x, y, epochs=300, sample_weight=weights, callbacks=[StopAtLossValue(), early_stopping, checkpoint])
+                # Train the network for up to 600 epochs.
+                network.fit(x, y, epochs=600, sample_weight=weights, callbacks=[StopAtLossValue(), early_stopping, checkpoint])
 
                 # Load the best weights that have been saved in the h5 file.
                 network.load_weights('weights.keras')
             else:
-                mlp = MLPRegressor(hidden_layer_sizes=(256, 128, 64, 32, 16, 8, 4), activation='tanh', max_iter=300, random_state=i)
+                mlp = MLPRegressor(hidden_layer_sizes=(512, 256, 128, 64, 32, 16, 8, 4), activation='tanh', max_iter=600, random_state=i)
                 mlp.fit(x.values, y.values)
                 network = mlp
 
