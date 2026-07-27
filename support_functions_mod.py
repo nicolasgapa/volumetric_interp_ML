@@ -33,6 +33,32 @@ import geopy.distance
 from baseline_interp import fit_interpolator
 
 
+def fourier_encode(x, num_frequencies=8):
+    """
+    Fourier Feature Positional Encoding mapping 3D coordinates (x, y, z) into a higher-dimensional
+    sinusoidal representation: gamma(x) = [x, sin(2^k * pi * x), cos(2^k * pi * x)].
+    Overcomes spectral bias in MLPs when learning 3D spatial implicit density fields.
+    """
+    x_arr = np.asarray(x)
+    freqs = 2.0 ** np.arange(num_frequencies)
+    encoded = [x_arr]
+    for f in freqs:
+        encoded.append(np.sin(f * np.pi * x_arr))
+        encoded.append(np.cos(f * np.pi * x_arr))
+    return np.hstack(encoded)
+
+
+class FourierModel:
+    """Wraps a model fitted on Fourier-encoded coordinates so .predict(x) accepts unencoded 3D inputs."""
+    def __init__(self, model, num_frequencies=8):
+        self.model = model
+        self.num_frequencies = num_frequencies
+
+    def predict(self, x):
+        x_enc = fourier_encode(x, num_frequencies=self.num_frequencies)
+        return self.model.predict(x_enc)
+
+
 
 
 def read_datafile(filenames, start_time, end_time, chi2lim=(0.1, 10)):
@@ -289,15 +315,21 @@ def fit_volumetric_models(df, real_dist=False, density_range=(1e10, 1e12), model
     y_lim = [np.min(y_org.iloc[:, 0]), np.max(y_org.iloc[:, 0])]
 
     models = []
-    if model.lower() == 'ann':
-        # Training the nn n_trials times (can be changed) and keeping every trained network,
-        # so predictions elsewhere can be ensemble-averaged exactly like `volumetric_nn` does.
+    if model.lower() in ('ann', 'fourier', 'ann_fourier'):
+        use_fourier = (model.lower() in ('fourier', 'ann_fourier'))
+        num_frequencies = 8
+
+        if use_fourier:
+            x_train_input = fourier_encode(x.values, num_frequencies=num_frequencies)
+        else:
+            x_train_input = x.values
+
         for i in range(n_trials):
             ####################
             ## NEURAL NETWORK ##
             ####################
             if tf is not None:
-                network = tf.keras.Sequential([tf.keras.layers.Dense(units=1024, input_shape=[x.shape[1]], activation='swish'),
+                network = tf.keras.Sequential([tf.keras.layers.Dense(units=1024, input_shape=[x_train_input.shape[1]], activation='swish'),
                                            tf.keras.layers.Dense(units=512, activation='swish'),
                                            tf.keras.layers.Dense(units=256, activation='swish'),
                                            tf.keras.layers.Dense(units=128, activation='swish'),
@@ -321,16 +353,19 @@ def fit_volumetric_models(df, real_dist=False, density_range=(1e10, 1e12), model
                 early_stopping = tf.keras.callbacks.EarlyStopping(monitor='loss', mode='auto', verbose=0, patience=35)
 
                 # Train the network for up to 500 epochs.
-                network.fit(x, y, epochs=500, sample_weight=weights, callbacks=[StopAtLossValue(), reduce_lr, early_stopping, checkpoint])
+                network.fit(x_train_input, y, epochs=500, sample_weight=weights, callbacks=[StopAtLossValue(), reduce_lr, early_stopping, checkpoint])
 
                 # Load the best weights that have been saved in the h5 file.
                 network.load_weights('weights.keras')
             else:
                 mlp = MLPRegressor(hidden_layer_sizes=(1024, 512, 256, 128, 64, 32, 16, 8, 4), activation='relu', max_iter=1500, random_state=i)
-                mlp.fit(x.values, y.values)
+                mlp.fit(x_train_input, y.values)
                 network = mlp
 
-            models.append(network)
+            if use_fourier:
+                models.append(FourierModel(network, num_frequencies=num_frequencies))
+            else:
+                models.append(network)
     else:
         ##########################
         ## BASELINE INTERPOLATOR ##
