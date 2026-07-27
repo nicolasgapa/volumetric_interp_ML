@@ -23,9 +23,9 @@ import pandas as pd
 from support_functions_mod import read_datafile, fit_volumetric_models, ensemble_predict
 
 # Inputs: same convention as model_mod.py.
-data_file = ["risrn_synthetic_imaging_chapman.h5"]
-start = dt.datetime.strptime("2016-09-13T00:00:01", '%Y-%m-%dT%H:%M:%S')
-end = dt.datetime.strptime("2016-09-13T00:10:00", '%Y-%m-%dT%H:%M:%S')
+data_file = ["20171119.001_lp_1min-fitcal.h5"]
+start = dt.datetime.strptime("2017-11-20T19:14:00", '%Y-%m-%dT%H:%M:%S')
+end = dt.datetime.strptime("2017-11-20T19:17:00", '%Y-%m-%dT%H:%M:%S')
 
 # Methods to compare: 'ann' (standard MLP), 'linear', and 'nearest'.
 methods = ['ann', 'linear', 'nearest']
