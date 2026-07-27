@@ -329,18 +329,23 @@ def fit_volumetric_models(df, real_dist=False, density_range=(1e10, 1e12), model
             ## NEURAL NETWORK ##
             ####################
             if tf is not None:
-                network = tf.keras.Sequential([tf.keras.layers.Dense(units=512, input_shape=[x_train_input.shape[1]], activation='swish'),
-                                           tf.keras.layers.Dense(units=512, activation='swish'),
-                                           tf.keras.layers.Dense(units=512, activation='swish'),
-                                           tf.keras.layers.Dense(units=256, activation='swish'),
-                                           tf.keras.layers.Dense(units=256, activation='swish'),
-                                           tf.keras.layers.Dense(units=128, activation='swish'),
-                                           tf.keras.layers.Dense(units=64, activation='swish'),
-                                           tf.keras.layers.Dense(units=32, activation='swish'),
-                                           tf.keras.layers.Dense(units=1, activation='sigmoid')])
+                inputs = tf.keras.Input(shape=(x_train_input.shape[1],))
+                x = tf.keras.layers.Dense(256, activation='swish', kernel_regularizer=tf.keras.regularizers.l2(1e-5))(inputs)
+                
+                # ResNet blocks with skip connections
+                for _ in range(3):
+                    residual = x
+                    block_x = tf.keras.layers.Dense(256, activation='swish', kernel_regularizer=tf.keras.regularizers.l2(1e-5))(x)
+                    block_x = tf.keras.layers.Dense(256, activation='swish', kernel_regularizer=tf.keras.regularizers.l2(1e-5))(block_x)
+                    x = tf.keras.layers.Add()([residual, block_x])
+                
+                x = tf.keras.layers.Dense(128, activation='swish', kernel_regularizer=tf.keras.regularizers.l2(1e-5))(x)
+                x = tf.keras.layers.Dense(64, activation='swish', kernel_regularizer=tf.keras.regularizers.l2(1e-5))(x)
+                outputs = tf.keras.layers.Dense(1, activation='sigmoid')(x)
+                network = tf.keras.Model(inputs=inputs, outputs=outputs)
 
-                # Compile the network: Adam optimizer with learning rate 5e-4.
-                network.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.0005), loss=tf.keras.losses.MeanSquaredError())
+                # Compile the network: Adam optimizer with learning rate 8e-4 and L1 (MAE) loss.
+                network.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.0008), loss=tf.keras.losses.MeanAbsoluteError())
 
                 # Define a checkpoint to save best weights.
                 checkpoint = tf.keras.callbacks.ModelCheckpoint('weights.keras', verbose=1, monitor='loss', save_best_only=True, mode='auto')
@@ -348,11 +353,11 @@ def fit_volumetric_models(df, real_dist=False, density_range=(1e10, 1e12), model
                 # Learning rate scheduler: decay LR by 0.5 when loss plateaus for 20 epochs.
                 reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(monitor='loss', factor=0.5, patience=20, min_lr=1e-6, verbose=0)
 
-                # Early stopping: patience set to 45 epochs.
-                early_stopping = tf.keras.callbacks.EarlyStopping(monitor='loss', mode='auto', verbose=0, patience=45)
+                # Early stopping: patience set to 50 epochs.
+                early_stopping = tf.keras.callbacks.EarlyStopping(monitor='loss', mode='auto', verbose=0, patience=50)
 
-                # Train the network for up to 600 epochs.
-                network.fit(x_train_input, y, epochs=600, sample_weight=weights, callbacks=[StopAtLossValue(), reduce_lr, early_stopping, checkpoint])
+                # Train the network for up to 750 epochs.
+                network.fit(x_train_input, y, epochs=750, sample_weight=weights, callbacks=[StopAtLossValue(), reduce_lr, early_stopping, checkpoint])
 
                 # Load the best weights that have been saved in the h5 file.
                 network.load_weights('weights.keras')
