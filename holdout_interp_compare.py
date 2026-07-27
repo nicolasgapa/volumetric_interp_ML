@@ -27,8 +27,8 @@ data_file = ["risrn_synthetic_imaging_chapman.h5"]
 start = dt.datetime.strptime("2016-09-13T00:00:01", '%Y-%m-%dT%H:%M:%S')
 end = dt.datetime.strptime("2016-09-13T00:10:00", '%Y-%m-%dT%H:%M:%S')
 
-# Methods to compare: 'ann' (standard MLP), 'fourier' (Fourier Feature ANN), and non-ML baselines ('linear', 'nearest', 'rbf').
-methods = ['ann', 'fourier', 'linear', 'nearest', 'rbf']
+# Methods to compare: 'ann' (standard MLP), 'linear', and 'nearest'.
+methods = ['ann', 'linear', 'nearest']
 
 # Train/test split settings.
 test_fraction = 0.10
