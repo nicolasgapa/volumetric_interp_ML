@@ -329,31 +329,30 @@ def fit_volumetric_models(df, real_dist=False, density_range=(1e10, 1e12), model
             ## NEURAL NETWORK ##
             ####################
             if tf is not None:
-                network = tf.keras.Sequential([tf.keras.layers.Dense(units=1024, input_shape=[x_train_input.shape[1]], activation='swish'),
+                network = tf.keras.Sequential([tf.keras.layers.Dense(units=512, input_shape=[x_train_input.shape[1]], activation='swish'),
                                            tf.keras.layers.Dense(units=512, activation='swish'),
+                                           tf.keras.layers.Dense(units=512, activation='swish'),
+                                           tf.keras.layers.Dense(units=256, activation='swish'),
                                            tf.keras.layers.Dense(units=256, activation='swish'),
                                            tf.keras.layers.Dense(units=128, activation='swish'),
                                            tf.keras.layers.Dense(units=64, activation='swish'),
                                            tf.keras.layers.Dense(units=32, activation='swish'),
-                                           tf.keras.layers.Dense(units=16, activation='swish'),
-                                           tf.keras.layers.Dense(units=8, activation='swish'),
-                                           tf.keras.layers.Dense(units=4, activation='swish'),
                                            tf.keras.layers.Dense(units=1, activation='sigmoid')])
 
-                # Compile the network: Adam optimizer with learning rate 1e-3.
-                network.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.001), loss=tf.keras.losses.MeanSquaredError())
+                # Compile the network: Adam optimizer with learning rate 5e-4.
+                network.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.0005), loss=tf.keras.losses.MeanSquaredError())
 
                 # Define a checkpoint to save best weights.
                 checkpoint = tf.keras.callbacks.ModelCheckpoint('weights.keras', verbose=1, monitor='loss', save_best_only=True, mode='auto')
 
-                # Learning rate scheduler: decay LR by 0.5 when loss plateaus for 15 epochs.
-                reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(monitor='loss', factor=0.5, patience=15, min_lr=1e-6, verbose=0)
+                # Learning rate scheduler: decay LR by 0.5 when loss plateaus for 20 epochs.
+                reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(monitor='loss', factor=0.5, patience=20, min_lr=1e-6, verbose=0)
 
-                # Early stopping: patience set to 35 epochs.
-                early_stopping = tf.keras.callbacks.EarlyStopping(monitor='loss', mode='auto', verbose=0, patience=35)
+                # Early stopping: patience set to 45 epochs.
+                early_stopping = tf.keras.callbacks.EarlyStopping(monitor='loss', mode='auto', verbose=0, patience=45)
 
-                # Train the network for up to 500 epochs.
-                network.fit(x_train_input, y, epochs=500, sample_weight=weights, callbacks=[StopAtLossValue(), reduce_lr, early_stopping, checkpoint])
+                # Train the network for up to 600 epochs.
+                network.fit(x_train_input, y, epochs=600, sample_weight=weights, callbacks=[StopAtLossValue(), reduce_lr, early_stopping, checkpoint])
 
                 # Load the best weights that have been saved in the h5 file.
                 network.load_weights('weights.keras')
